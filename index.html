@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AutoLog" />
+  <meta name="theme-color" content="#1a6fa8" />
+  <title>AutoLog – Car Maintenance Tracker</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif; background: #F7F8FA; color: #1A1A2E; -webkit-tap-highlight-color: transparent; }
+    select, input, textarea, button { font-family: inherit; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-thumb { background: #DDE0EE; border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ── Supabase client ──────────────────────────────────────────────────────────
+const SUPABASE_URL  = "https://lgbmzkwijsvbugaudssm.supabase.co";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxnYm16a3dpanN2YnVnYXVkc3NtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMwMzUyODEsImV4cCI6MjA5ODYxMTI4MX0.I5YbO27jJo1viSHg_eBsekBgOod03YOMW_rWh8Rst-I";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const SERVICE_TYPES = [
+  "Oil Change","Tire Rotation","Brake Service","Air Filter","Cabin Filter",
+  "Coolant Flush","Transmission Service","Battery Replacement","Spark Plugs",
+  "Wiper Blades","Alignment","Inspection / Emissions","Other",
+];
+
+const STATUS_COLORS = {
+  done:    { bg:"#E6F4EA", text:"#2D6A4F", dot:"#40C074" },
+  due:     { bg:"#FFF3CD", text:"#7D5A00", dot:"#F5A623" },
+  overdue: { bg:"#FDE8E8", text:"#9B1C1C", dot:"#E53E3E" },
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function getStatus(r) {
+  if (!r.next_mileage && !r.next_date) return "done";
+  const today = new Date();
+  if ((r.next_mileage && r.current_mileage >= r.next_mileage) ||
+      (r.next_date && new Date(r.next_date) < today)) return "overdue";
+  if ((r.next_mileage && r.current_mileage >= r.next_mileage - 500) ||
+      (r.next_date && new Date(r.next_date) - today < 14*24*60*60*1000)) return "due";
+  return "done";
+}
+
+function formatDate(d) {
+  if (!d) return "—";
+  return new Date(d + "T00:00:00").toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
+}
+function fmtMi(n) { return n ? Number(n).toLocaleString() + " mi" : "—"; }
+
+const blankForm = {
+  car:"", serviceType:"", customService:"",
+  date: new Date().toISOString().slice(0,10),
+  mileage:"", cost:"", shop:"", notes:"",
+  next_mileage:"", next_date:"", current_mileage:"",
+};
+
+const inp = {
+  width:"100%", padding:"9px 11px", borderRadius:8,
+  border:"1px solid #DDE0EE", fontSize:13,
+  background:"#fff", color:"#1A1A2E", outline:"none",
+};
+
+// ── Small components ─────────────────────────────────────────────────────────
+function Field({ label, children, wide }) {
+  return (
+    <div style={wide ? { gridColumn:"1/-1" } : {}}>
+      <label style={{ display:"block", fontSize:11, fontWeight:600, color:"#8B8FA8",
+        marginBottom:5, letterSpacing:"0.4px", textTransform:"uppercase" }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function Detail({ label, value, wide }) {
+  return (
+    <div style={wide ? { gridColumn:"1/-1" } : {}}>
+      <div style={{ fontSize:11, color:"#A0A4BE", fontWeight:600, textTransform:"uppercase", letterSpacing:"0.4px" }}>{label}</div>
+      <div style={{ fontSize:13, color:"#2D2F45", fontWeight:500, marginTop:2 }}>{value}</div>
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)",
+      zIndex:100, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:"16px 16px 0 0",
+        width:"100%", maxWidth:560, maxHeight:"90vh", overflowY:"auto", padding:"20px 20px 40px" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+          <div style={{ fontWeight:700, fontSize:16 }}>{title}</div>
+          <button onClick={onClose} style={{ background:"#F0F1F7", border:"none", borderRadius:"50%",
+            width:28, height:28, cursor:"pointer", fontSize:14, color:"#5A5F7A" }}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"60px 20px", color:"#8B8FA8" }}>
+      <div style={{ width:36, height:36, border:"3px solid #DDE0EE", borderTop:"3px solid #2aa6c8",
+        borderRadius:"50%", animation:"spin 0.8s linear infinite", marginBottom:14 }} />
+      <div style={{ fontSize:13 }}>Loading your records…</div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [records, setRecords]       = useState([]);
+  const [cars, setCars]             = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [saving, setSaving]         = useState(false);
+  const [error, setError]           = useState(null);
+  const [filterCar, setFilterCar]   = useState("All");
+  const [filterStatus, setFilterStatus] = useState("All");
+  const [sortBy, setSortBy]         = useState("date");
+  const [showForm, setShowForm]     = useState(false);
+  const [form, setForm]             = useState(blankForm);
+  const [editId, setEditId]         = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [showCarMgr, setShowCarMgr] = useState(false);
+  const [newCar, setNewCar]         = useState("");
+
+  // ── Fetch data from Supabase ──
+  const fetchAll = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const [{ data: recs, error: e1 }, { data: carsData, error: e2 }] = await Promise.all([
+        sb.from("records").select("*").order("date", { ascending: false }),
+        sb.from("cars").select("*").order("created_at", { ascending: true }),
+      ]);
+      if (e1) throw e1;
+      if (e2) throw e2;
+      setRecords(recs || []);
+      setCars((carsData || []).map(c => c.name));
+    } catch(e) {
+      setError("Could not connect to database. Check your internet connection.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // ── Form helpers ──
+  const openForm = () => { setForm(blankForm); setEditId(null); setShowForm(true); };
+  const closeForm = () => { setShowForm(false); setEditId(null); setForm(blankForm); };
+
+  // ── Submit record ──
+  const submit = async () => {
+    if (!form.car || (!form.serviceType && !form.customService) || !form.date) return;
+    const serviceLabel = form.serviceType === "Other" ? form.customService : form.serviceType;
+    const payload = {
+      car:             form.car,
+      service_label:   serviceLabel,
+      date:            form.date,
+      mileage:         form.mileage         ? Number(form.mileage)         : null,
+      cost:            form.cost            ? parseFloat(form.cost)        : null,
+      shop:            form.shop            || null,
+      notes:           form.notes           || null,
+      next_mileage:    form.next_mileage    ? Number(form.next_mileage)    : null,
+      next_date:       form.next_date       || null,
+      current_mileage: form.current_mileage ? Number(form.current_mileage): null,
+    };
+    setSaving(true);
+    try {
+      if (editId) {
+        const { error } = await sb.from("records").update(payload).eq("id", editId);
+        if (error) throw error;
+      } else {
+        const { error } = await sb.from("records").insert(payload);
+        if (error) throw error;
+      }
+      await fetchAll();
+      closeForm();
+    } catch(e) {
+      alert("Error saving record: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Edit record ──
+  const editRecord = rec => {
+    setForm({
+      car:             rec.car,
+      serviceType:     SERVICE_TYPES.includes(rec.service_label) ? rec.service_label : "Other",
+      customService:   SERVICE_TYPES.includes(rec.service_label) ? "" : rec.service_label,
+      date:            rec.date || "",
+      mileage:         rec.mileage         ?? "",
+      cost:            rec.cost            ?? "",
+      shop:            rec.shop            || "",
+      notes:           rec.notes           || "",
+      next_mileage:    rec.next_mileage    ?? "",
+      next_date:       rec.next_date       || "",
+      current_mileage: rec.current_mileage ?? "",
+    });
+    setEditId(rec.id); setShowForm(true); setExpandedId(null);
+  };
+
+  // ── Delete record ──
+  const deleteRecord = async id => {
+    if (!window.confirm("Delete this service record?")) return;
+    setSaving(true);
+    try {
+      const { error } = await sb.from("records").delete().eq("id", id);
+      if (error) throw error;
+      setRecords(p => p.filter(r => r.id !== id));
+      if (expandedId === id) setExpandedId(null);
+    } catch(e) {
+      alert("Error deleting: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Add car ──
+  const addCar = async () => {
+    const name = newCar.trim();
+    if (!name || cars.includes(name)) { setNewCar(""); return; }
+    setSaving(true);
+    try {
+      const { error } = await sb.from("cars").insert({ name });
+      if (error) throw error;
+      setCars(p => [...p, name]);
+      setNewCar("");
+    } catch(e) {
+      alert("Error adding car: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Delete car ──
+  const deleteCar = async name => {
+    if (!window.confirm(`Remove "${name}" from your garage?`)) return;
+    setSaving(true);
+    try {
+      const { error } = await sb.from("cars").delete().eq("name", name);
+      if (error) throw error;
+      setCars(p => p.filter(c => c !== name));
+    } catch(e) {
+      alert("Error removing car: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ── Filtered + sorted records ──
+  const filtered = records
+    .filter(r => filterCar === "All" || r.car === filterCar)
+    .filter(r => filterStatus === "All" || getStatus(r) === filterStatus.toLowerCase())
+    .sort((a,b) => {
+      if (sortBy === "date")    return new Date(b.date) - new Date(a.date);
+      if (sortBy === "mileage") return (b.mileage||0) - (a.mileage||0);
+      if (sortBy === "status")  return ({overdue:0,due:1,done:2}[getStatus(a)]) - ({overdue:0,due:1,done:2}[getStatus(b)]);
+      return 0;
+    });
+
+  const overdueCnt = records.filter(r => getStatus(r) === "overdue").length;
+  const dueCnt     = records.filter(r => getStatus(r) === "due").length;
+
+  // ── Render ──
+  return (
+    <div style={{ fontFamily:"inherit", background:"#F7F8FA", minHeight:"100vh" }}>
+
+      {/* Header */}
+      <div style={{ background:"linear-gradient(135deg, #1a6fa8 0%, #2aa6c8 50%, #3dbfd4 100%)",
+        padding:"28px 20px 22px", display:"flex", flexDirection:"column", alignItems:"center",
+        gap:12, position:"relative", overflow:"hidden" }}>
+
+        {/* Classic car silhouettes */}
+        <svg viewBox="0 0 900 120" xmlns="http://www.w3.org/2000/svg"
+          style={{ position:"absolute", bottom:0, left:0, width:"100%", height:"100%",
+            opacity:0.12, pointerEvents:"none" }}>
+          <g transform="translate(20, 30)">
+            <ellipse cx="55" cy="80" rx="22" ry="22" fill="white"/>
+            <ellipse cx="55" cy="80" rx="12" ry="12" fill="#2aa6c8"/>
+            <ellipse cx="185" cy="80" rx="22" ry="22" fill="white"/>
+            <ellipse cx="185" cy="80" rx="12" ry="12" fill="#2aa6c8"/>
+            <rect x="25" y="55" width="210" height="30" rx="4" fill="white"/>
+            <path d="M50 55 Q70 20 100 15 L175 15 Q205 18 220 55 Z" fill="white"/>
+            <rect x="30" y="48" width="18" height="8" rx="2" fill="#2aa6c8"/>
+            <rect x="192" y="50" width="22" height="6" rx="2" fill="#2aa6c8"/>
+            <path d="M95 20 L105 20 L108 55 L92 55 Z" fill="#2aa6c8" opacity="0.5"/>
+            <path d="M140 18 L155 18 L158 55 L137 55 Z" fill="#2aa6c8" opacity="0.5"/>
+          </g>
+          <g transform="translate(310, 25)">
+            <ellipse cx="58" cy="85" rx="23" ry="23" fill="white"/>
+            <ellipse cx="58" cy="85" rx="12" ry="12" fill="#2aa6c8"/>
+            <ellipse cx="202" cy="85" rx="23" ry="23" fill="white"/>
+            <ellipse cx="202" cy="85" rx="12" ry="12" fill="#2aa6c8"/>
+            <rect x="28" y="60" width="232" height="30" rx="3" fill="white"/>
+            <path d="M55 60 Q65 15 120 10 L170 10 Q215 12 232 60 Z" fill="white"/>
+            <path d="M118 12 Q160 10 195 60 L118 60 Z" fill="#2aa6c8" opacity="0.4"/>
+            <rect x="35" y="54" width="20" height="7" rx="2" fill="#2aa6c8"/>
+            <rect x="208" y="54" width="24" height="7" rx="2" fill="#2aa6c8"/>
+            <rect x="60" y="13" width="55" height="48" rx="2" fill="#2aa6c8" opacity="0.35"/>
+          </g>
+          <g transform="translate(640, 32)">
+            <ellipse cx="52" cy="78" rx="21" ry="21" fill="white"/>
+            <ellipse cx="52" cy="78" rx="11" ry="11" fill="#2aa6c8"/>
+            <ellipse cx="188" cy="78" rx="21" ry="21" fill="white"/>
+            <ellipse cx="188" cy="78" rx="11" ry="11" fill="#2aa6c8"/>
+            <rect x="22" y="54" width="216" height="28" rx="5" fill="white"/>
+            <path d="M48 54 Q62 18 105 14 L158 14 Q198 16 212 54 Z" fill="white"/>
+            <rect x="28" y="48" width="16" height="7" rx="2" fill="#2aa6c8"/>
+            <rect x="196" y="49" width="20" height="6" rx="2" fill="#2aa6c8"/>
+            <path d="M100 16 L118 16 L120 54 L98 54 Z" fill="#2aa6c8" opacity="0.4"/>
+            <path d="M138 15 L155 15 L157 54 L136 54 Z" fill="#2aa6c8" opacity="0.4"/>
+          </g>
+          <line x1="0" y1="102" x2="900" y2="102" stroke="white" strokeWidth="1.5" opacity="0.4"/>
+        </svg>
+
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:6, position:"relative", zIndex:1 }}>
+          <span style={{ fontSize:64, lineHeight:1, filter:"drop-shadow(0 2px 6px rgba(0,0,0,0.2))" }}>🔧</span>
+          <div style={{ color:"#fff", fontWeight:800, fontSize:32, letterSpacing:"-0.5px",
+            textAlign:"center", textShadow:"0 2px 8px rgba(0,0,0,0.2)" }}>AutoLog</div>
+          <div style={{ color:"rgba(255,255,255,0.85)", fontSize:16, textAlign:"center",
+            textShadow:"0 1px 4px rgba(0,0,0,0.15)" }}>Car Maintenance Tracker</div>
+          {saving && <div style={{ fontSize:11, color:"rgba(255,255,255,0.7)", marginTop:2 }}>💾 Saving…</div>}
+        </div>
+        <div style={{ display:"flex", gap:8, marginTop:4, position:"relative", zIndex:1 }}>
+          <button onClick={()=>setShowCarMgr(true)}
+            style={{ background:"rgba(0,0,0,0.2)", color:"#fff", border:"1px solid rgba(255,255,255,0.3)",
+              borderRadius:8, padding:"8px 14px", fontSize:13, cursor:"pointer" }}>🚗 My Cars</button>
+          <button onClick={openForm}
+            style={{ background:"rgba(255,255,255,0.95)", color:"#1a6fa8", border:"none", borderRadius:8,
+              padding:"8px 16px", fontSize:13, fontWeight:700, cursor:"pointer" }}>+ Add Service</button>
+        </div>
+      </div>
+
+      {/* Alert Banner */}
+      {(overdueCnt>0||dueCnt>0) && (
+        <div style={{ background:overdueCnt>0?"#FDE8E8":"#FFF3CD",
+          borderBottom:`2px solid ${overdueCnt>0?"#E53E3E":"#F5A623"}`,
+          padding:"10px 20px", display:"flex", gap:16, flexWrap:"wrap" }}>
+          {overdueCnt>0 && <span style={{ color:"#9B1C1C", fontSize:13, fontWeight:600 }}>⚠️ {overdueCnt} service{overdueCnt>1?"s":""} overdue</span>}
+          {dueCnt>0     && <span style={{ color:"#7D5A00", fontSize:13, fontWeight:600 }}>🕐 {dueCnt} service{dueCnt>1?"s":""} due soon</span>}
+        </div>
+      )}
+
+      {/* Error Banner */}
+      {error && (
+        <div style={{ background:"#FDE8E8", borderBottom:"2px solid #E53E3E", padding:"10px 20px",
+          display:"flex", alignItems:"center", justifyContent:"space-between", gap:12 }}>
+          <span style={{ color:"#9B1C1C", fontSize:13 }}>⚠️ {error}</span>
+          <button onClick={fetchAll} style={{ background:"#E53E3E", color:"#fff", border:"none",
+            borderRadius:6, padding:"4px 10px", fontSize:12, cursor:"pointer" }}>Retry</button>
+        </div>
+      )}
+
+      <div style={{ maxWidth:720, margin:"0 auto", padding:"20px 16px" }}>
+
+        {/* Filters */}
+        <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
+          <select value={filterCar} onChange={e=>setFilterCar(e.target.value)} style={{ ...inp, width:"auto", cursor:"pointer" }}>
+            <option value="All">All Cars</option>
+            {cars.map(c=><option key={c}>{c}</option>)}
+          </select>
+          <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={{ ...inp, width:"auto", cursor:"pointer" }}>
+            <option value="All">All Status</option>
+            <option value="Overdue">Overdue</option>
+            <option value="Due">Due Soon</option>
+            <option value="Done">Up to Date</option>
+          </select>
+          <button onClick={fetchAll} title="Refresh" style={{ background:"#fff", border:"1px solid #DDE0EE",
+            borderRadius:8, padding:"8px 12px", fontSize:14, cursor:"pointer", color:"#5A5F7A" }}>🔄</button>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{ ...inp, width:"auto", cursor:"pointer", marginLeft:"auto" }}>
+            <option value="date">Sort: Date</option>
+            <option value="mileage">Sort: Mileage</option>
+            <option value="status">Sort: Status</option>
+          </select>
+        </div>
+
+        {/* Records */}
+        {loading ? <Spinner /> : filtered.length===0 ? (
+          <div style={{ textAlign:"center", padding:"60px 20px", color:"#8B8FA8" }}>
+            <div style={{ fontSize:48, marginBottom:12 }}>🔩</div>
+            <div style={{ fontWeight:600, fontSize:16, marginBottom:6 }}>No service records yet</div>
+            <div style={{ fontSize:13 }}>Add your first service to get started.</div>
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {filtered.map(rec => {
+              const st  = getStatus(rec);
+              const sc  = STATUS_COLORS[st];
+              const isExp = expandedId === rec.id;
+              return (
+                <div key={rec.id} style={{ background:"#fff", borderRadius:12,
+                  border:"1px solid #E8E9F0", overflow:"hidden", boxShadow:"0 1px 3px rgba(0,0,0,0.06)" }}>
+                  <div onClick={()=>setExpandedId(isExp?null:rec.id)}
+                    style={{ padding:"14px 16px", cursor:"pointer", display:"flex", alignItems:"center", gap:12 }}>
+                    <div style={{ width:8, height:8, borderRadius:"50%", background:sc.dot, flexShrink:0 }} />
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                        <span style={{ fontWeight:600, fontSize:15 }}>{rec.service_label}</span>
+                        <span style={{ background:"#F0F1F7", color:"#5A5F7A", fontSize:11,
+                          padding:"2px 8px", borderRadius:20, fontWeight:500 }}>{rec.car}</span>
+                        <span style={{ background:sc.bg, color:sc.text, fontSize:11,
+                          padding:"2px 8px", borderRadius:20, fontWeight:500 }}>
+                          {st==="overdue"?"Overdue":st==="due"?"Due Soon":"Up to Date"}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", gap:14, marginTop:4, fontSize:12, color:"#8B8FA8", flexWrap:"wrap" }}>
+                        <span>📅 {formatDate(rec.date)}</span>
+                        {rec.mileage && <span>🛣 {fmtMi(rec.mileage)}</span>}
+                        {rec.cost    && <span>💵 ${Number(rec.cost).toFixed(2)}</span>}
+                      </div>
+                    </div>
+                    <span style={{ color:"#C0C4D8", fontSize:12 }}>{isExp?"▲":"▼"}</span>
+                  </div>
+
+                  {isExp && (
+                    <div style={{ borderTop:"1px solid #F0F1F7", padding:"12px 16px 16px", background:"#FAFBFD" }}>
+                      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px 16px", fontSize:13 }}>
+                        {rec.shop            && <Detail label="Shop / Mechanic"      value={rec.shop} />}
+                        {rec.next_date       && <Detail label="Next Service Date"     value={formatDate(rec.next_date)} />}
+                        {rec.next_mileage    && <Detail label="Next Service Mileage"  value={fmtMi(rec.next_mileage)} />}
+                        {rec.current_mileage && <Detail label="Current Mileage"       value={fmtMi(rec.current_mileage)} />}
+                        {rec.notes           && <Detail label="Notes" value={rec.notes} wide />}
+                      </div>
+                      <div style={{ display:"flex", gap:8, marginTop:14 }}>
+                        <button onClick={()=>editRecord(rec)}
+                          style={{ background:"#F0F1F7", color:"#3A3D55", border:"none", borderRadius:7,
+                            padding:"7px 14px", fontSize:12, fontWeight:600, cursor:"pointer" }}>✏️ Edit</button>
+                        <button onClick={()=>deleteRecord(rec.id)}
+                          style={{ background:"#FDE8E8", color:"#9B1C1C", border:"none", borderRadius:7,
+                            padding:"7px 14px", fontSize:12, fontWeight:600, cursor:"pointer" }}>🗑 Delete</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Add / Edit Modal */}
+      {showForm && (
+        <Modal title={editId?"Edit Service Record":"Log a Service"} onClose={closeForm}>
+          <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+            <Field label="Car *">
+              <select value={form.car} onChange={e=>setForm({...form,car:e.target.value})} style={inp}>
+                <option value="">Select a car…</option>
+                {cars.map(c=><option key={c}>{c}</option>)}
+              </select>
+              {cars.length===0 && <div style={{ fontSize:11, color:"#9B1C1C", marginTop:4 }}>Add a car first via "My Cars"</div>}
+            </Field>
+            <Field label="Service Type *">
+              <select value={form.serviceType} onChange={e=>setForm({...form,serviceType:e.target.value,customService:""})} style={inp}>
+                <option value="">Select service…</option>
+                {SERVICE_TYPES.map(s=><option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            {form.serviceType==="Other" && (
+              <Field label="Custom Service *">
+                <input value={form.customService} onChange={e=>setForm({...form,customService:e.target.value})}
+                  placeholder="e.g. Fuel Injector Cleaning" style={inp} />
+              </Field>
+            )}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+              <Field label="Date *">
+                <input type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} style={inp} />
+              </Field>
+              <Field label="Mileage at Service">
+                <input type="number" value={form.mileage} onChange={e=>setForm({...form,mileage:e.target.value})}
+                  placeholder="e.g. 45000" style={inp} />
+              </Field>
+              <Field label="Cost ($)">
+                <input type="number" value={form.cost} onChange={e=>setForm({...form,cost:e.target.value})}
+                  placeholder="e.g. 49.99" style={inp} />
+              </Field>
+              <Field label="Shop / Mechanic">
+                <input value={form.shop} onChange={e=>setForm({...form,shop:e.target.value})}
+                  placeholder="e.g. Jiffy Lube" style={inp} />
+              </Field>
+            </div>
+            <div style={{ background:"#F7F8FA", borderRadius:8, padding:12 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:"#5A5F7A", marginBottom:10 }}>NEXT SERVICE REMINDER</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                <Field label="Next Service Date">
+                  <input type="date" value={form.next_date} onChange={e=>setForm({...form,next_date:e.target.value})} style={inp} />
+                </Field>
+                <Field label="Next Service Mileage">
+                  <input type="number" value={form.next_mileage} onChange={e=>setForm({...form,next_mileage:e.target.value})}
+                    placeholder="e.g. 50000" style={inp} />
+                </Field>
+                <Field label="Current Mileage">
+                  <input type="number" value={form.current_mileage} onChange={e=>setForm({...form,current_mileage:e.target.value})}
+                    placeholder="Odometer now" style={inp} />
+                </Field>
+              </div>
+            </div>
+            <Field label="Notes">
+              <textarea value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}
+                placeholder="Any additional notes…" style={{ ...inp, minHeight:60, resize:"vertical" }} />
+            </Field>
+            <button onClick={submit} disabled={saving}
+              style={{ background: saving?"#a0c4e8":"#1a6fa8", color:"#fff", border:"none", borderRadius:9,
+                padding:"12px", fontSize:14, fontWeight:700, cursor: saving?"not-allowed":"pointer", marginTop:4 }}>
+              {saving ? "Saving…" : editId ? "Save Changes" : "Log Service"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Car Manager Modal */}
+      {showCarMgr && (
+        <Modal title="My Cars" onClose={()=>setShowCarMgr(false)}>
+          <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+            <input value={newCar} onChange={e=>setNewCar(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&addCar()}
+              placeholder="e.g. 2019 Honda Civic" style={{ ...inp, flex:1 }} />
+            <button onClick={addCar} disabled={saving}
+              style={{ background:"#1a6fa8", color:"#fff", border:"none", borderRadius:8,
+                padding:"0 16px", fontWeight:700, cursor:"pointer" }}>Add</button>
+          </div>
+          {cars.length===0
+            ? <div style={{ color:"#8B8FA8", fontSize:13, textAlign:"center", padding:"20px 0" }}>No cars added yet.</div>
+            : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {cars.map(c=>(
+                  <div key={c} style={{ display:"flex", alignItems:"center", background:"#F7F8FA", borderRadius:8, padding:"10px 12px" }}>
+                    <span style={{ flex:1, fontSize:14, fontWeight:500 }}>🚗 {c}</span>
+                    <button onClick={()=>deleteCar(c)}
+                      style={{ background:"none", border:"none", color:"#C0C4D8", fontSize:16, cursor:"pointer" }}>✕</button>
+                  </div>
+                ))}
+              </div>
+          }
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
